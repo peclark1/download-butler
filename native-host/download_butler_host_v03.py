@@ -20,11 +20,12 @@ from urllib.parse import quote
 
 import download_butler_host as core
 
-VERSION = "0.3.0"
-METADATA_VERSION = 1
+VERSION = "0.3.3"
+METADATA_VERSION = 2
 METADATA_SUFFIX = ".download-info.md"
 INDEX_FILENAME = "Download Butler Index.md"
 INDEX_LOCK_NAME = ".download-butler-index.lock"
+HOST_STATE_LOCK_NAME = ".download-butler-host.lock"
 
 
 def clean_text(value: object, limit: int = 4000) -> str:
@@ -43,6 +44,7 @@ def normalized_metadata(raw: dict | None) -> dict:
         "linkText": clean_text(raw.get("linkText"), 1000),
         "linkTitle": clean_text(raw.get("linkTitle"), 1000),
         "pageContext": clean_text(raw.get("pageContext"), 4000),
+        "sectionTitle": clean_text(raw.get("sectionTitle"), 1000),
     }
 
 
@@ -133,6 +135,7 @@ def sidecar_document(destination: Path, metadata: dict, batch_id: str) -> str:
         f"file_size: {file_size}",
         f"description: {yaml_string(description)}",
         f"source_page_title: {yaml_string(metadata['sourcePageTitle'])}",
+        f"section_title: {yaml_string(metadata['sectionTitle'])}",
         f"source_page_url: {yaml_string(metadata['sourcePageUrl'])}",
         f"download_url: {yaml_string(metadata['downloadUrl'])}",
         f"link_text: {yaml_string(metadata['linkText'])}",
@@ -147,6 +150,8 @@ def sidecar_document(destination: Path, metadata: dict, batch_id: str) -> str:
     if description:
         lines.extend([description, ""])
     lines.extend(["## Source", ""])
+    if metadata["sectionTitle"]:
+        lines.append(f"- **Section:** {metadata['sectionTitle']}")
     if metadata["sourcePageTitle"]:
         lines.append(f"- **Source page:** {metadata['sourcePageTitle']}")
     if metadata["sourcePageUrl"]:
@@ -205,6 +210,35 @@ def local_link(filename: str) -> str:
 
 
 @contextmanager
+def host_state_lock(timeout: float = 30.0):
+    """Serialize native-host state mutations across sendNativeMessage processes."""
+    core.STATE_DIR.mkdir(parents=True, exist_ok=True)
+    lock = core.STATE_DIR / HOST_STATE_LOCK_NAME
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            lock.mkdir()
+            break
+        except FileExistsError:
+            try:
+                if time.time() - lock.stat().st_mtime > 120:
+                    lock.rmdir()
+                    continue
+            except OSError:
+                pass
+            if time.monotonic() >= deadline:
+                raise RuntimeError("timed out waiting for Download Butler native-host state")
+            time.sleep(0.03)
+    try:
+        yield
+    finally:
+        try:
+            lock.rmdir()
+        except OSError:
+            pass
+
+
+@contextmanager
 def index_lock(folder: Path, timeout: float = 10.0):
     lock = folder / INDEX_LOCK_NAME
     deadline = time.monotonic() + timeout
@@ -249,13 +283,14 @@ def rebuild_index(folder: Path) -> Path:
         ]
         if records:
             lines.extend([
-                "| File | Description | Downloaded | Source page |",
-                "| --- | --- | --- | --- |",
+                "| File | Description | Section | Downloaded | Source page |",
+                "| --- | --- | --- | --- | --- |",
             ])
             for record in records:
                 filename = str(record.get("filename", ""))
                 lines.append(
                     f"| {local_link(filename)} | {table_text(record.get('description', ''))} | "
+                    f"{table_text(record.get('section_title', ''), 120)} | "
                     f"{table_text(record.get('downloaded', ''), 80)} | "
                     f"{table_text(record.get('source_page_title', ''), 120)} |"
                 )
@@ -267,6 +302,8 @@ def rebuild_index(folder: Path) -> Path:
                 lines.extend([f"### {filename}", ""])
                 if description:
                     lines.extend([description, ""])
+                if record.get("section_title"):
+                    lines.append(f"- **Section:** {clean_text(record.get('section_title'), 1000)}")
                 if record.get("source_page_title"):
                     lines.append(f"- **Source page:** {clean_text(record.get('source_page_title'), 1000)}")
                 if record.get("source_page_url"):
@@ -301,10 +338,16 @@ def attach_metadata(state: dict, ticket: str, metadata: dict) -> None:
 def handle_choose(message: dict, state: dict) -> dict:
     response = core.handle_choose(message, state)
     if response.get("ok") and response.get("ticket"):
-        attach_metadata(state, response["ticket"], {
-            "sourcePageUrl": message.get("sourcePageUrl") or "",
-            "downloadUrl": message.get("url") or "",
-        })
+        ticket = response["ticket"]
+        info = state.get("tickets", {}).get(ticket)
+        save_metadata = bool(message.get("saveMetadata"))
+        if info is not None:
+            info["saveMetadata"] = save_metadata
+        if save_metadata:
+            attach_metadata(state, ticket, {
+                "sourcePageUrl": message.get("sourcePageUrl") or "",
+                "downloadUrl": message.get("url") or "",
+            })
         core.save_state(state)
     return response
 
@@ -321,6 +364,7 @@ def handle_prepare_batch(message: dict, state: dict) -> dict:
     batch_id = str(message.get("batchId") or uuid.uuid4().hex)
     source_title = clean_text(message.get("sourcePageTitle"), 1000)
     source_url = clean_text(message.get("sourcePageUrl"), 8000)
+    save_metadata = bool(message.get("saveMetadata", True))
 
     initial_dir = core.existing_initial_dir(state, site_key, remember_per_site)
     selected = core.choose_folder(initial_dir)
@@ -354,14 +398,19 @@ def handle_prepare_batch(message: dict, state: dict) -> dict:
             stage_name=stage_name,
             batch_id=batch_id,
         )
-        attach_metadata(state, ticket, {
-            "sourcePageTitle": source_title,
-            "sourcePageUrl": source_url,
-            "downloadUrl": url,
-            "linkText": raw.get("linkText") or "",
-            "linkTitle": raw.get("linkTitle") or "",
-            "pageContext": raw.get("pageContext") or "",
-        })
+        info = state.get("tickets", {}).get(ticket)
+        if info is not None:
+            info["saveMetadata"] = save_metadata
+        if save_metadata:
+            attach_metadata(state, ticket, {
+                "sourcePageTitle": source_title,
+                "sourcePageUrl": source_url,
+                "downloadUrl": url,
+                "linkText": raw.get("linkText") or "",
+                "linkTitle": raw.get("linkTitle") or "",
+                "pageContext": raw.get("pageContext") or "",
+                "sectionTitle": raw.get("sectionTitle") or "",
+            })
         prepared.append({
             "url": url,
             "targetFilename": destination.name,
@@ -386,17 +435,18 @@ def handle_commit(message: dict, state: dict) -> dict:
     metadata_error = ""
     sidecar_path = ""
     index_path = ""
-    try:
-        destination = Path(str(response.get("destinationPath") or "")).expanduser()
-        sidecar, index = write_metadata(
-            destination,
-            info.get("metadata") if isinstance(info.get("metadata"), dict) else {},
-            str(info.get("batchId") or ""),
-        )
-        sidecar_path, index_path = str(sidecar), str(index)
-    except Exception as exc:
-        metadata_error = str(exc)
-        core.log("File was saved, but metadata write failed:", exc)
+    if bool(info.get("saveMetadata", True)):
+        try:
+            destination = Path(str(response.get("destinationPath") or "")).expanduser()
+            sidecar, index = write_metadata(
+                destination,
+                info.get("metadata") if isinstance(info.get("metadata"), dict) else {},
+                str(info.get("batchId") or ""),
+            )
+            sidecar_path, index_path = str(sidecar), str(index)
+        except Exception as exc:
+            metadata_error = str(exc)
+            core.log("File was saved, but metadata write failed:", exc)
 
     response.update({
         "metadataSidecarPath": sidecar_path,
@@ -407,21 +457,26 @@ def handle_commit(message: dict, state: dict) -> dict:
 
 
 def dispatch(message: dict) -> dict:
-    state = core.load_state()
     action = message.get("action")
-    if action == "choose_destination":
-        return handle_choose(message, state)
-    if action == "prepare_batch":
-        return handle_prepare_batch(message, state)
-    if action == "commit_download":
-        return handle_commit(message, state)
     if action == "reveal_path":
         return core.handle_reveal(message)
-    if action == "status":
-        response = core.handle_status(state)
-        response["version"] = VERSION
-        return response
-    raise RuntimeError(f"unknown action: {action!r}")
+
+    # chrome.runtime.sendNativeMessage starts a new helper process for each
+    # request. Large batches can therefore produce many completion helpers at
+    # once; serialize state access so their state.json updates cannot race.
+    with host_state_lock():
+        state = core.load_state()
+        if action == "choose_destination":
+            return handle_choose(message, state)
+        if action == "prepare_batch":
+            return handle_prepare_batch(message, state)
+        if action == "commit_download":
+            return handle_commit(message, state)
+        if action == "status":
+            response = core.handle_status(state)
+            response["version"] = VERSION
+            return response
+        raise RuntimeError(f"unknown action: {action!r}")
 
 
 def main() -> int:

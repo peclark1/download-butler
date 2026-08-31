@@ -1,7 +1,9 @@
 const HOST_NAME = 'com.downloadbutler.host';
-const VERSION = '0.3.0';
+const VERSION = '0.3.3';
 const BATCH_MENU_ID = 'download-butler-selection';
 let promptQueue = Promise.resolve();
+let commitQueue = Promise.resolve();
+const commitsScheduled = new Set();
 
 function enqueuePrompt(task) {
   const result = promptQueue.then(task, task);
@@ -9,10 +11,32 @@ function enqueuePrompt(task) {
   return result;
 }
 
+function scheduleCommit(downloadId) {
+  if (!Number.isInteger(downloadId) || commitsScheduled.has(downloadId)) return;
+  commitsScheduled.add(downloadId);
+  const task = async () => {
+    try {
+      await commitCompletedDownload(downloadId);
+    } finally {
+      commitsScheduled.delete(downloadId);
+    }
+  };
+  const result = commitQueue.then(task, task);
+  commitQueue = result.catch(() => {});
+}
+
+async function scheduleCommitIfAlreadyComplete(downloadId) {
+  try {
+    const items = await chrome.downloads.search({ id: downloadId });
+    if (items[0]?.state === 'complete') scheduleCommit(downloadId);
+  } catch (_) {}
+}
+
 const DEFAULT_SETTINGS = {
   enabled: true,
   rememberPerSite: false,
   eraseChromeHistory: true,
+  saveSingleMetadata: false,
 };
 
 async function getSettings() {
@@ -21,6 +45,7 @@ async function getSettings() {
     enabled: stored.enabled ?? true,
     rememberPerSite: stored.rememberPerSite ?? false,
     eraseChromeHistory: stored.eraseChromeHistory ?? true,
+    saveSingleMetadata: stored.saveSingleMetadata ?? false,
   };
 }
 
@@ -131,6 +156,7 @@ async function chooseDestination(item) {
     rememberPerSite: settings.rememberPerSite,
     url: item.finalUrl || item.url || '',
     sourcePageUrl: item.referrer || '',
+    saveMetadata: settings.saveSingleMetadata,
   });
 
   if (!response || response.ok !== true) {
@@ -292,9 +318,29 @@ async function commitCompletedDownload(downloadId) {
 
 chrome.downloads.onChanged.addListener((delta) => {
   if (delta.state?.current === 'complete') {
-    commitCompletedDownload(delta.id);
+    scheduleCommit(delta.id);
   }
 });
+
+async function recoverCompletedPendingDownloads() {
+  try {
+    const stored = await chrome.storage.local.get(null);
+    const ids = Object.keys(stored)
+      .filter((key) => key.startsWith('pendingDownload:'))
+      .map((key) => Number(key.slice('pendingDownload:'.length)))
+      .filter(Number.isInteger);
+
+    // Also recognize the pre-v0.1.2 shared pending object if it still exists.
+    for (const key of Object.keys(stored.pending || {})) {
+      const id = Number(key);
+      if (Number.isInteger(id) && !ids.includes(id)) ids.push(id);
+    }
+
+    for (const id of ids) await scheduleCommitIfAlreadyComplete(id);
+  } catch (error) {
+    await setLastError(`Could not recover completed downloads: ${String(error?.message || error)}`);
+  }
+}
 
 function collectSelectedLinksInPage() {
   const selection = window.getSelection();
@@ -317,7 +363,47 @@ function collectSelectedLinksInPage() {
     return context === linkOnly ? '' : context;
   }
 
-  function add(url, text = '', downloadName = '', context = '', title = '') {
+  function sectionTitleFor(anchor) {
+    // Prefer semantic headings. The last heading before the link normally
+    // describes the section containing it, even when that heading is not
+    // included in the user's text selection.
+    let best = '';
+    for (const heading of document.querySelectorAll('h1, h2, h3, h4, h5, h6, [role="heading"], caption')) {
+      const relation = heading.compareDocumentPosition(anchor);
+      if (!(relation & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
+      const text = cleanText(heading.innerText || heading.textContent || '', 300);
+      if (text && text.length <= 300) best = text;
+    }
+    if (best) return best;
+
+    // Older hand-authored archive pages sometimes use a bold/enlarged DIV or
+    // paragraph instead of a real heading element. Search a few nearby blocks
+    // above the link and accept only short, visibly heading-like text.
+    const bodySize = parseFloat(getComputedStyle(document.body).fontSize) || 16;
+    let node = anchor.closest('tr, li, p, table, div, section, article') || anchor;
+    for (let depth = 0; node && node !== document.body && depth < 8; depth += 1, node = node.parentElement) {
+      let sibling = node.previousElementSibling;
+      for (let scanned = 0; sibling && scanned < 6; scanned += 1, sibling = sibling.previousElementSibling) {
+        const nestedHeading = sibling.matches('h1, h2, h3, h4, h5, h6, [role="heading"], caption')
+          ? sibling
+          : sibling.querySelector('h1, h2, h3, h4, h5, h6, [role="heading"], caption');
+        if (nestedHeading) {
+          const text = cleanText(nestedHeading.innerText || nestedHeading.textContent || '', 300);
+          if (text) return text;
+        }
+
+        const text = cleanText(sibling.innerText || sibling.textContent || '', 220);
+        if (!text || text.length > 220) continue;
+        const style = getComputedStyle(sibling);
+        const size = parseFloat(style.fontSize) || bodySize;
+        const weight = parseInt(style.fontWeight, 10) || (style.fontWeight === 'bold' ? 700 : 400);
+        if (size >= bodySize * 1.2 || weight >= 600) return text;
+      }
+    }
+    return '';
+  }
+
+  function add(url, text = '', downloadName = '', context = '', title = '', sectionTitle = '') {
     try {
       const u = new URL(url, document.baseURI);
       if (!['http:', 'https:'].includes(u.protocol)) return;
@@ -330,6 +416,7 @@ function collectSelectedLinksInPage() {
         downloadName: String(downloadName || '').trim(),
         context: cleanText(context, 1500),
         title: cleanText(title, 500),
+        sectionTitle: cleanText(sectionTitle, 300),
       });
     } catch (_) {}
   }
@@ -351,6 +438,7 @@ function collectSelectedLinksInPage() {
         anchor.getAttribute('download') || '',
         pageContextFor(anchor),
         anchor.getAttribute('title') || '',
+        sectionTitleFor(anchor),
       );
     }
   }
@@ -360,7 +448,7 @@ function collectSelectedLinksInPage() {
   const matches = selection.toString().match(/https?:\/\/[^\s<>"']+/gi) || [];
   for (let raw of matches) {
     raw = raw.replace(/[),.;!?]+$/g, '');
-    add(raw, raw, '', selectedText, '');
+    add(raw, raw, '', selectedText, '', '');
   }
 
   return output;
@@ -379,9 +467,16 @@ async function ensureContextMenu() {
   }
 }
 
-chrome.runtime.onInstalled.addListener(() => { ensureContextMenu(); });
-chrome.runtime.onStartup.addListener(() => { ensureContextMenu(); });
+chrome.runtime.onInstalled.addListener(() => {
+  ensureContextMenu();
+  recoverCompletedPendingDownloads();
+});
+chrome.runtime.onStartup.addListener(() => {
+  ensureContextMenu();
+  recoverCompletedPendingDownloads();
+});
 ensureContextMenu();
+recoverCompletedPendingDownloads();
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   if (info.menuItemId !== BATCH_MENU_ID || !tab?.id) return;
@@ -408,6 +503,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
       text: link.text || '',
       context: link.context || '',
       title: link.title || '',
+      sectionTitle: link.sectionTitle || '',
       filename: safeFilename(link.downloadName || filenameFromUrl(link.url, link.text || `download-${index + 1}`)),
     }));
 
@@ -438,7 +534,7 @@ async function getBatchRequest(batchId) {
   return result[key] || null;
 }
 
-async function startBatch(batchId, requestedItems) {
+async function startBatch(batchId, requestedItems, saveMetadata = true) {
   const batch = await getBatchRequest(batchId);
   if (!batch) throw new Error('This batch request has expired. Select the links again.');
 
@@ -454,6 +550,7 @@ async function startBatch(batchId, requestedItems) {
       linkText: original.text || '',
       linkTitle: original.title || '',
       pageContext: original.context || '',
+      sectionTitle: original.sectionTitle || '',
     });
   }
   if (!items.length) throw new Error('No files are selected for download.');
@@ -467,6 +564,7 @@ async function startBatch(batchId, requestedItems) {
     sourcePageTitle: batch.sourceTitle || '',
     sourcePageUrl: batch.sourceUrl || '',
     rememberPerSite: settings.rememberPerSite,
+    saveMetadata: Boolean(saveMetadata),
   });
 
   if (!response || response.ok !== true) {
@@ -511,6 +609,11 @@ async function startBatch(batchId, requestedItems) {
         batchId,
         startedAt: new Date().toISOString(),
       });
+
+      // A very small file can finish before the line above runs. In that case
+      // Chrome's one completion event has already passed, so explicitly check
+      // the current state now and schedule the commit if needed.
+      await scheduleCommitIfAlreadyComplete(id);
       started.push({ id, filename: prepared.targetFilename, url: prepared.url });
     } catch (error) {
       await chrome.storage.local.remove(reservationKey);
@@ -556,7 +659,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message?.action === 'start_batch' && message.batchId) {
-    startBatch(message.batchId, message.items)
+    startBatch(message.batchId, message.items, message.saveMetadata !== false)
       .then((result) => sendResponse(result))
       .catch(async (error) => {
         await setLastError(String(error?.message || error));

@@ -11,13 +11,14 @@ h1 { margin: 0 0 6px; font-size: 26px; font-weight: 650; }
 .muted { margin: 0; overflow-wrap: anywhere; }
 .count { white-space: nowrap; font-weight: 600; padding-top: 6px; }
 .toolbar { display: flex; align-items: center; gap: 18px; margin: 24px 0 10px; }
-.select-all { font-weight: 600; white-space: nowrap; }
+.select-all, .metadata-toggle { font-weight: 600; white-space: nowrap; }
 .list { border: 1px solid color-mix(in srgb, CanvasText 18%, transparent); border-radius: 10px; overflow: hidden; }
 .row { display: grid; grid-template-columns: 34px minmax(220px, 0.9fr) minmax(300px, 1.4fr); gap: 12px; align-items: center; padding: 12px 14px; border-bottom: 1px solid color-mix(in srgb, CanvasText 12%, transparent); }
 .row:last-child { border-bottom: 0; }
 .row:hover { background: color-mix(in srgb, CanvasText 5%, transparent); }
 .filename { width: 100%; padding: 8px 9px; border-radius: 6px; border: 1px solid color-mix(in srgb, CanvasText 22%, transparent); background: Field; color: FieldText; }
 .url-wrap { min-width: 0; }
+.section-title { font-size: 12px; margin-bottom: 3px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .link-text { font-size: 13px; margin-bottom: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .context { font-size: 12px; margin-bottom: 3px; color: color-mix(in srgb, CanvasText 72%, transparent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .url { font-size: 12px; color: color-mix(in srgb, CanvasText 58%, transparent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

@@ -57,6 +57,11 @@ function render() {
 
     const urlWrap = document.createElement('div');
     urlWrap.className = 'url-wrap';
+    const sectionTitle = document.createElement('div');
+    sectionTitle.className = 'section-title';
+    sectionTitle.textContent = item.sectionTitle ? `Section: ${item.sectionTitle}` : '';
+    sectionTitle.title = item.sectionTitle || '';
+    if (!sectionTitle.textContent) sectionTitle.classList.add('hidden');
     const linkText = document.createElement('div');
     linkText.className = 'link-text';
     linkText.textContent = item.text || item.filename;
@@ -69,7 +74,7 @@ function render() {
     url.className = 'url';
     url.textContent = item.url;
     url.title = item.url;
-    urlWrap.append(linkText, context, url);
+    urlWrap.append(sectionTitle, linkText, context, url);
 
     row.append(pick, filename, urlWrap);
     list.append(row);
@@ -90,8 +95,14 @@ async function load() {
     return;
   }
   batch = response.batch;
+  const prefs = await chrome.storage.local.get({ batchSaveMetadata: true });
+  $('saveMetadata').checked = prefs.batchSaveMetadata ?? true;
   render();
 }
+
+$('saveMetadata').addEventListener('change', async (event) => {
+  await chrome.storage.local.set({ batchSaveMetadata: event.target.checked });
+});
 
 $('selectAll').addEventListener('change', (event) => {
   for (const pick of document.querySelectorAll('.pick')) pick.checked = event.target.checked;
@@ -110,7 +121,9 @@ $('download').addEventListener('click', async () => {
   $('error').classList.add('hidden');
 
   try {
-    const response = await chrome.runtime.sendMessage({ action: 'start_batch', batchId, items });
+    const saveMetadata = $('saveMetadata').checked;
+    await chrome.storage.local.set({ batchSaveMetadata: saveMetadata });
+    const response = await chrome.runtime.sendMessage({ action: 'start_batch', batchId, items, saveMetadata });
     if (response?.cancelled) {
       $('download').textContent = 'Choose Folder & Download';
       $('download').disabled = false;
@@ -122,7 +135,7 @@ $('download').addEventListener('click', async () => {
     const started = response.started?.length || 0;
     const failures = response.failures?.length || 0;
     const destination = response.directoryPath || 'the selected folder';
-    showSuccess(`Started ${started} download${started === 1 ? '' : 's'} to ${destination}${failures ? `; ${failures} could not be started.` : '.'} Metadata sidecars and Download Butler Index.md will be written as files complete.`);
+    showSuccess(`Started ${started} download${started === 1 ? '' : 's'} to ${destination}${failures ? `; ${failures} could not be started.` : '.'}${saveMetadata ? ' Metadata sidecars and Download Butler Index.md will be written as files complete.' : ' Metadata is disabled for this batch.'}`);
     $('download').textContent = 'Downloads started';
     $('cancel').textContent = 'Close';
     $('cancel').disabled = false;

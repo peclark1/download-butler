@@ -2,6 +2,7 @@ const DEFAULTS = {
   enabled: true,
   rememberPerSite: false,
   eraseChromeHistory: true,
+  saveSingleMetadata: false,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -20,8 +21,9 @@ async function load() {
   $('enabled').checked = data.enabled;
   $('rememberPerSite').checked = data.rememberPerSite;
   $('eraseChromeHistory').checked = data.eraseChromeHistory;
+  $('saveSingleMetadata').checked = data.saveSingleMetadata;
 
-  for (const id of ['enabled', 'rememberPerSite', 'eraseChromeHistory']) {
+  for (const id of ['enabled', 'rememberPerSite', 'eraseChromeHistory', 'saveSingleMetadata']) {
     $(id).addEventListener('change', async (event) => {
       await chrome.storage.local.set({ [id]: event.target.checked });
     });

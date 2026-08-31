@@ -62,6 +62,6 @@ Next:
 
 Then download a small test file. Download Butler should show the Save As dialog.
 For batch mode, select several linked files on a page, Control-click the selection,
-and choose "Download links in selection with Butler…". v0.3 also writes a
+and choose "Download links in selection with Butler…". v0.3.3 can also write a
 .download-info.md sidecar for each file plus Download Butler Index.md.
 EOF
