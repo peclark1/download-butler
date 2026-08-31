@@ -1,0 +1,20 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Editor / IDE
+.vscode/
+.idea/
+*~
+
+# Logs and local build artifacts
+*.log
+*.zip
+
+# Download Butler local state is stored outside the repository on macOS:
+# ~/Library/Application Support/Download Butler/
