@@ -1,5 +1,5 @@
 const HOST_NAME = 'com.downloadbutler.host';
-const VERSION = '0.2.0';
+const VERSION = '0.3.0';
 const BATCH_MENU_ID = 'download-butler-selection';
 let promptQueue = Promise.resolve();
 
@@ -130,6 +130,7 @@ async function chooseDestination(item) {
     siteKey,
     rememberPerSite: settings.rememberPerSite,
     url: item.finalUrl || item.url || '',
+    sourcePageUrl: item.referrer || '',
   });
 
   if (!response || response.ok !== true) {
@@ -264,13 +265,19 @@ async function commitCompletedDownload(downloadId) {
     }
 
     await removePendingEntry(downloadId);
-    await clearLastError();
+    if (response.metadataError) {
+      await setLastError(`File saved, but metadata could not be written: ${response.metadataError}`);
+    } else {
+      await clearLastError();
+    }
     await addHistory({
       filename: basename(response.destinationPath || entry.destinationPath) || entry.originalName,
       destinationPath: response.destinationPath || entry.destinationPath,
       url: entry.url,
       siteKey: entry.siteKey,
       batchId: entry.batchId || '',
+      metadataSidecarPath: response.metadataSidecarPath || '',
+      metadataIndexPath: response.metadataIndexPath || '',
       completedAt: new Date().toISOString(),
     });
 
@@ -296,14 +303,34 @@ function collectSelectedLinksInPage() {
   const output = [];
   const seen = new Set();
 
-  function add(url, text = '', downloadName = '') {
+  function cleanText(value, limit = 1500) {
+    const text = String(value || '').replace(/\s+/g, ' ').trim();
+    if (text.length <= limit) return text;
+    return `${text.slice(0, Math.max(0, limit - 1)).trimEnd()}…`;
+  }
+
+  function pageContextFor(anchor) {
+    const contextNode = anchor.closest('tr, li, p, dd, dt, figcaption') || anchor.parentElement;
+    if (!contextNode) return '';
+    const context = cleanText(contextNode.innerText || contextNode.textContent || '');
+    const linkOnly = cleanText(anchor.innerText || anchor.textContent || '');
+    return context === linkOnly ? '' : context;
+  }
+
+  function add(url, text = '', downloadName = '', context = '', title = '') {
     try {
       const u = new URL(url, document.baseURI);
       if (!['http:', 'https:'].includes(u.protocol)) return;
       const href = u.href;
       if (seen.has(href)) return;
       seen.add(href);
-      output.push({ url: href, text: String(text || '').trim(), downloadName: String(downloadName || '').trim() });
+      output.push({
+        url: href,
+        text: cleanText(text, 500),
+        downloadName: String(downloadName || '').trim(),
+        context: cleanText(context, 1500),
+        title: cleanText(title, 500),
+      });
     } catch (_) {}
   }
 
@@ -317,15 +344,23 @@ function collectSelectedLinksInPage() {
         }
       } catch (_) {}
     }
-    if (intersects) add(anchor.href, anchor.textContent, anchor.getAttribute('download') || '');
+    if (intersects) {
+      add(
+        anchor.href,
+        anchor.textContent,
+        anchor.getAttribute('download') || '',
+        pageContextFor(anchor),
+        anchor.getAttribute('title') || '',
+      );
+    }
   }
 
   // Also recognize a bare http(s) URL if the visible URL text itself was selected.
-  const selectedText = selection.toString();
-  const matches = selectedText.match(/https?:\/\/[^\s<>"']+/gi) || [];
+  const selectedText = cleanText(selection.toString(), 1500);
+  const matches = selection.toString().match(/https?:\/\/[^\s<>"']+/gi) || [];
   for (let raw of matches) {
     raw = raw.replace(/[),.;!?]+$/g, '');
-    add(raw, raw, '');
+    add(raw, raw, '', selectedText, '');
   }
 
   return output;
@@ -371,6 +406,8 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     const items = links.slice(0, 250).map((link, index) => ({
       url: link.url,
       text: link.text || '',
+      context: link.context || '',
+      title: link.title || '',
       filename: safeFilename(link.downloadName || filenameFromUrl(link.url, link.text || `download-${index + 1}`)),
     }));
 
@@ -414,6 +451,9 @@ async function startBatch(batchId, requestedItems) {
     items.push({
       url: original.url,
       filename: safeFilename(requested.filename || original.filename),
+      linkText: original.text || '',
+      linkTitle: original.title || '',
+      pageContext: original.context || '',
     });
   }
   if (!items.length) throw new Error('No files are selected for download.');
@@ -424,6 +464,8 @@ async function startBatch(batchId, requestedItems) {
     batchId,
     items,
     siteKey: batch.siteKey || '',
+    sourcePageTitle: batch.sourceTitle || '',
+    sourcePageUrl: batch.sourceUrl || '',
     rememberPerSite: settings.rememberPerSite,
   });
 

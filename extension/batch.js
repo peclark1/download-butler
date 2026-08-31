@@ -60,11 +60,16 @@ function render() {
     const linkText = document.createElement('div');
     linkText.className = 'link-text';
     linkText.textContent = item.text || item.filename;
+    const context = document.createElement('div');
+    context.className = 'context';
+    context.textContent = item.context || item.title || '';
+    context.title = item.context || item.title || '';
+    if (!context.textContent) context.classList.add('hidden');
     const url = document.createElement('div');
     url.className = 'url';
     url.textContent = item.url;
     url.title = item.url;
-    urlWrap.append(linkText, url);
+    urlWrap.append(linkText, context, url);
 
     row.append(pick, filename, urlWrap);
     list.append(row);
@@ -117,7 +122,7 @@ $('download').addEventListener('click', async () => {
     const started = response.started?.length || 0;
     const failures = response.failures?.length || 0;
     const destination = response.directoryPath || 'the selected folder';
-    showSuccess(`Started ${started} download${started === 1 ? '' : 's'} to ${destination}${failures ? `; ${failures} could not be started.` : '.'}`);
+    showSuccess(`Started ${started} download${started === 1 ? '' : 's'} to ${destination}${failures ? `; ${failures} could not be started.` : '.'} Metadata sidecars and Download Butler Index.md will be written as files complete.`);
     $('download').textContent = 'Downloads started';
     $('cancel').textContent = 'Close';
     $('cancel').disabled = false;

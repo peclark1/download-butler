@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Download Butler",
-  "version": "0.2.0",
-  "description": "Prompt for downloads, remember destinations, and batch-download links from a selection.",
+  "version": "0.3.0",
+  "description": "Prompt for downloads, remember destinations, batch-download selected links, and preserve source metadata.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAr3QagsTHUpux8bL3O811Pr/RSGGxu4gF4bteG8bIeyk8dvipiApDHsH9//LYH66tiQZ/Vy7BzcrXj3Xxlw5Mrr1ABmzvW6ceGYaXiYTkdrrsp4rSjZIEKrLP8k4r8EHB0oF3UFWxe5BplSqFfQqLHyCbMO9mI+JJgO7I0F/YrZ5KmFF/okuu5CzB+kU5Qa/20TJpqy4qL3jpAhmY7U7j0+5XT+oO1ljZEsLlqwK5dmSTIOypULIRwmHpXhFy8W/fXO3rP4Wd4rUFELZPa2/Ume9m9GYT/q4u/A/LclbVPmw5QKoOLPWKp7fFZosDS6mqoXLSQ8b1oLaY+3+kxHE3/wIDAQAB",
   "permissions": [
     "activeTab",

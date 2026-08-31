@@ -72,7 +72,7 @@ async function checkHost() {
   try {
     const response = await chrome.runtime.sendMessage({ action: 'native_status' });
     if (response?.ok) {
-      status.textContent = `Helper connected (${response.platform || 'native'})`;
+      status.textContent = `Helper connected (${response.platform || 'native'}, v${response.version || '?'})`;
       status.className = 'status ok';
       lastFolder.textContent = response.lastDir || 'None yet';
       lastFolder.classList.toggle('muted', !response.lastDir);

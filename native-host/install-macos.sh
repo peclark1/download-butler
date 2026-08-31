@@ -16,16 +16,18 @@ APP_DIR="$HOME/Library/Application Support/Download Butler"
 HOST_DIR="$APP_DIR/host"
 NM_DIR="$HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts"
 HOST_PY="$HOST_DIR/download_butler_host.py"
+HOST_V03_PY="$HOST_DIR/download_butler_host_v03.py"
 HOST_WRAPPER="$HOST_DIR/download_butler_host"
 MANIFEST="$NM_DIR/$HOST_NAME.json"
 
 mkdir -p "$HOST_DIR" "$NM_DIR"
 cp "$SCRIPT_DIR/download_butler_host.py" "$HOST_PY"
-chmod 755 "$HOST_PY"
+cp "$SCRIPT_DIR/download_butler_host_v03.py" "$HOST_V03_PY"
+chmod 755 "$HOST_PY" "$HOST_V03_PY"
 
 cat > "$HOST_WRAPPER" <<EOF
 #!/bin/sh
-exec "$PYTHON_BIN" "$HOST_PY" "\$@"
+exec "$PYTHON_BIN" "$HOST_V03_PY" "\$@"
 EOF
 chmod 755 "$HOST_WRAPPER"
 
@@ -60,5 +62,6 @@ Next:
 
 Then download a small test file. Download Butler should show the Save As dialog.
 For batch mode, select several linked files on a page, Control-click the selection,
-and choose "Download links in selection with Butler…".
+and choose "Download links in selection with Butler…". v0.3 also writes a
+.download-info.md sidecar for each file plus Download Butler Index.md.
 EOF
