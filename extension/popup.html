@@ -1,0 +1,39 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Download Butler</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Download Butler</h1>
+      <div id="hostStatus" class="status">Checking helper…</div>
+    </header>
+
+    <section class="settings">
+      <label><input type="checkbox" id="enabled"> Manage Chrome downloads</label>
+      <label><input type="checkbox" id="rememberPerSite"> Remember a folder per website</label>
+      <label><input type="checkbox" id="eraseChromeHistory"> Remove moved files from Chrome download history</label>
+    </section>
+
+    <section>
+      <h2>Last folder</h2>
+      <div id="lastFolder" class="path muted">None yet</div>
+    </section>
+
+    <section>
+      <h2>Recent downloads</h2>
+      <div id="history" class="history muted">No managed downloads yet.</div>
+    </section>
+
+    <section id="errorSection" class="error-section hidden">
+      <h2>Last error</h2>
+      <div id="lastError" class="error"></div>
+    </section>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>

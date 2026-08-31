@@ -1,0 +1,36 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Download Butler — Selected Links</title>
+  <link rel="stylesheet" href="batch.css">
+</head>
+<body>
+  <main class="panel">
+    <header>
+      <div>
+        <h1>Download selected links</h1>
+        <p id="source" class="muted"></p>
+      </div>
+      <div id="count" class="count"></div>
+    </header>
+
+    <section id="error" class="message error hidden"></section>
+    <section id="success" class="message success hidden"></section>
+
+    <div class="toolbar">
+      <label class="select-all"><input id="selectAll" type="checkbox" checked> Select all</label>
+      <span class="hint">Review the files, uncheck anything you don't want, and edit a filename if needed.</span>
+    </div>
+
+    <div id="list" class="list"></div>
+
+    <footer>
+      <button id="cancel" class="secondary">Cancel</button>
+      <button id="download" class="primary">Choose Folder &amp; Download</button>
+    </footer>
+  </main>
+  <script src="batch.js"></script>
+</body>
+</html>
