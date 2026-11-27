@@ -213,3 +213,11 @@ The uninstall script intentionally leaves your saved folder-history state in pla
 v0.1.3 changes the Chrome staging strategy after macOS Chrome reported `Invalid filename` for the earlier hidden `.download-butler/<id>/...` path. New downloads now use one short ASCII staging filename directly in Chrome's configured Downloads directory. The native helper generates that unpredictable filename and binds it to the one-time move ticket.
 
 It also checks the download state before attempting cancellation, avoiding the secondary `Download must be in progress` extension error.
+
+## Recursive Apache directory downloads (v0.4.0)
+
+Select links on an Apache autoindex page and open the usual batch review. Parent and sorting links are excluded automatically. Enable **Recursively download directories**, then click **Scan selected directories** and grant site access when prompted. Review the discovered files and uncheck unwanted entries before choosing the destination. The selected directory name and nested folders are preserved, with optional metadata sidecars and indexes in each containing folder. Disable recursion to download the listing as an ordinary link instead.
+
+Update both the extension and native helper (rerun `native-host/install-macos.sh`, then reload the unpacked extension). Discovery is limited to Apache indexes, same-origin descendants, 32 levels, 250 directories and 250 files per batch. Redirected listings and failed scans stop before downloads start. Empty folders are not preserved. Public listings only (discovery omits cookies). Site access is requested only on scan.
+
+Manual regression checks: select an Apache listing containing files, a nested directory, parent and sort links; confirm only direct files and folders are initially shown; scan and verify nested filenames, uncheck one, download with metadata on/off, verify destination hierarchy and per-folder indexes. Test denied permission, failed listing, a parent/sibling link, and a symlink in the local destination. Verify an ordinary non-index batch still works.
