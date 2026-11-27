@@ -1,4 +1,4 @@
-# Download Butler 0.3.3 — macOS prototype
+# Download Butler 0.5.0 — macOS and Ubuntu
 
 Download Butler is a Chrome extension plus a small local native helper that gives Chrome a more useful download workflow:
 
@@ -180,14 +180,14 @@ It contains folder history, optional per-site folder choices, and short-lived au
 
 ## Current scope
 
-The native Save As, folder chooser, Reveal UI, batch selection workflow, and metadata writer currently target macOS. The extension/native protocol was deliberately separated from platform UI so Windows and Linux can use the same extension.
+The native Save As, folder chooser and Reveal UI support macOS and Linux; batch and metadata code is shared. Windows remains a future target.
 
 Good next steps are:
 
 - teach collection/catalog web tools to recognize `*.download-info.md` and show the provenance beside the corresponding file
 
 - Windows SaveFileDialog backend and installer
-- Linux GTK/portal or Zenity/KDialog backend and installer
+- Linux: Zenity backend and installer implemented in v0.5.0
 - favorite destination folders in the popup
 - a recent-folder chooser in the Save workflow
 - rules by domain and/or extension
@@ -221,3 +221,18 @@ Select links on an Apache autoindex page and open the usual batch review. Parent
 Update both the extension and native helper (rerun `native-host/install-macos.sh`, then reload the unpacked extension). Discovery is limited to Apache indexes, same-origin descendants, 32 levels, 250 directories and 250 files per batch. Redirected listings and failed scans stop before downloads start. Empty folders are not preserved. Public listings only (discovery omits cookies). Site access is requested only on scan.
 
 Manual regression checks: select an Apache listing containing files, a nested directory, parent and sort links; confirm only direct files and folders are initially shown; scan and verify nested filenames, uncheck one, download with metadata on/off, verify destination hierarchy and per-folder indexes. Test denied permission, failed listing, a parent/sibling link, and a symlink in the local destination. Verify an ordinary non-index batch still works.
+
+## Install on Ubuntu (v0.5.0)
+
+Use a graphical desktop session and regular (non-Snap/non-Flatpak) Google Chrome or Chromium. On Ubuntu 24.04, install the dependencies:
+
+```sh
+sudo apt install python3 zenity xdg-utils
+./native-host/install-linux.sh
+```
+
+Run the installer as your desktop user, not with sudo. Open chrome://extensions, enable Developer mode, and load the repository's extension directory (or reload an existing copy). Confirm the extension ID is dgapakllfejieilepaagdcidcjempiml. Turn off Chrome's own Ask where to save each file before downloading setting. Check native helper status in the extension popup. State is stored in the XDG configuration directory under download-butler. Snap and Flatpak browsers have different sandbox and native messaging constraints and are not supported by this installer.
+
+Zenity supplies Save As and folder selection dialogs. Reveal uses the freedesktop file manager interface when available, otherwise opens the containing folder via xdg-open. The existing recursive batch, metadata and remembered destination functionality is unchanged. To uninstall the helper while keeping history, run ./native-host/uninstall-linux.sh.
+
+Manual acceptance checks: status shows Linux and 0.5.0; single Save As and cancel; flat and recursive batch including nested directories; metadata on/off; remembered folder; reveal; mounted share; macOS regression. These checks require a real desktop and browser.

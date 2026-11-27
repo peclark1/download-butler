@@ -1,6 +1,6 @@
 import {parts,isDirectory,isIndex,child} from './directory.js';
 const HOST_NAME = 'com.downloadbutler.host';
-const VERSION = '0.4.0';
+const VERSION = '0.5.0';
 const BATCH_MENU_ID = 'download-butler-selection';
 let promptQueue = Promise.resolve();
 let commitQueue = Promise.resolve();
