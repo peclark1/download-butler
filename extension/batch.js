@@ -1,3 +1,4 @@
+import {concurrency} from './queue-policy.js';
 import {isDirectory,isIndex,child,parts,scan} from './directory.js';
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -5,6 +6,21 @@ const batchId = params.get('id') || '';
 let batch = null;
 let busy = false, completed = false, expanded = false;
 let initial = [];
+let progressTimer;
+async function refreshProgress() {
+  const response = await chrome.runtime.sendMessage({action:'batch_progress',batchId});
+  if (!response?.ok) return false;
+  const q = response.progress;
+  $('queueStatus').classList.remove('hidden');
+  $('queueStatus').textContent = `${q.queued} queued · ${q.active} active · ${q.completed} saved · ${q.failed} failed` + (q.errors.length ? '\n'+q.errors.join('\n') : '');
+  if (!q.active && !q.queued) clearInterval(progressTimer);
+  return true;
+}
+function watchProgress() {
+  clearInterval(progressTimer);
+  progressTimer = setInterval(() => refreshProgress().catch(console.warn), 1500);
+  refreshProgress().catch(console.warn);
+}
 
 function selectedRows() {
   return [...document.querySelectorAll('.row')]
@@ -99,12 +115,19 @@ async function load() {
   }
   const response = await chrome.runtime.sendMessage({ action: 'get_batch', batchId });
   if (!response?.ok || !response.batch) {
+    if (await refreshProgress()) {
+      completed = true; $('download').disabled = true; $('scan').disabled = true;
+      $('cancel').textContent = 'Close';
+      for (const input of document.querySelectorAll('input')) input.disabled = true;
+      watchProgress(); return;
+    }
     showError(response?.error || 'This batch request is no longer available.');
     $('download').disabled = true;
     return;
   }
   batch = response.batch;
-  const prefs = await chrome.storage.local.get({ batchSaveMetadata: true, batchRecursive: true });
+  const prefs = await chrome.storage.local.get({ batchSaveMetadata: true, batchRecursive: true, batchConcurrency: 3 });
+  $('concurrency').value = prefs.batchConcurrency;
   $('recursive').checked = prefs.batchRecursive;
   if (isIndex(batch.sourceTitle) && isDirectory(batch.sourceUrl)) {
     const before = batch.items.length;
@@ -176,8 +199,10 @@ $('download').addEventListener('click', async () => {
 
   try {
     const saveMetadata = $('saveMetadata').checked;
-    await chrome.storage.local.set({ batchSaveMetadata: saveMetadata });
-    const response = await chrome.runtime.sendMessage({ action: 'start_batch', batchId, items, saveMetadata });
+    if (!$('concurrency').reportValidity()) throw Error('Enter a valid concurrency limit.');
+    const limit = concurrency($('concurrency').valueAsNumber);
+    await chrome.storage.local.set({ batchSaveMetadata: saveMetadata, batchConcurrency:limit });
+    const response = await chrome.runtime.sendMessage({ action: 'start_batch', batchId, items, saveMetadata, concurrency:limit });
     if (response?.cancelled) {
       busy = false; updateCount();
       $('download').textContent = 'Choose Folder & Download';
@@ -187,12 +212,12 @@ $('download').addEventListener('click', async () => {
     }
     if (!response?.ok) throw new Error(response?.error || 'The batch could not be started.');
 
-    const started = response.started?.length || 0;
-    const failures = response.failures?.length || 0;
+    const total = response.total;
     const destination = response.directoryPath || 'the selected folder';
-    showSuccess(`Started ${started} download${started === 1 ? '' : 's'} to ${destination}${failures ? `; ${failures} could not be started.` : '.'}${saveMetadata ? ' Metadata sidecars and Download Butler Index.md will be written as files complete.' : ' Metadata is disabled for this batch.'}`);
+    showSuccess(`Queued ${total} files for ${destination}. ${limit === 0 ? 'Unlimited concurrency.' : 'Maximum '+limit+' concurrent downloads.'} You may close this tab.${saveMetadata ? ' Metadata will be written as files complete.' : ''}`);
+    watchProgress();
     completed = true; busy = false; $('scan').disabled = true;
-    $('download').textContent = 'Downloads started';
+    $('download').textContent = 'Batch queued';
     $('cancel').textContent = 'Close';
     $('cancel').disabled = false;
     for (const input of document.querySelectorAll('input')) input.disabled = true;
