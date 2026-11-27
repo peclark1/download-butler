@@ -22,6 +22,9 @@
     <div class="toolbar">
       <label class="select-all"><input id="selectAll" type="checkbox" checked> Select all</label>
       <label class="metadata-toggle"><input id="saveMetadata" type="checkbox" checked> Save metadata + folder index</label>
+      <label><input id="recursive" type="checkbox" checked> Recursively download directories</label>
+      <button id="scan" class="secondary" type="button">Scan selected directories</button>
+      <span id="scanStatus" class="hint" role="status"></span>
       <span class="hint">Review the files, uncheck anything you don't want, and edit a filename if needed.</span>
     </div>
 
@@ -32,6 +35,6 @@
       <button id="download" class="primary">Choose Folder &amp; Download</button>
     </footer>
   </main>
-  <script src="batch.js"></script>
+  <script type="module" src="batch.js"></script>
 </body>
 </html>

@@ -20,7 +20,7 @@ from urllib.parse import quote
 
 import download_butler_host as core
 
-VERSION = "0.3.3"
+VERSION = "0.4.0"
 METADATA_VERSION = 2
 METADATA_SUFFIX = ".download-info.md"
 INDEX_FILENAME = "Download Butler Index.md"
@@ -376,16 +376,29 @@ def handle_prepare_batch(message: dict, state: dict) -> dict:
         raise RuntimeError(f"selected destination is not a directory: {directory}")
     core.remember_directory(state, directory, site_key, remember_per_site)
 
-    reserved: set[str] = set()
+    reserved_by_folder: dict[Path, set[str]] = {}
     prepared = []
+    root = directory.resolve()
     for raw in raw_items:
         if not isinstance(raw, dict):
             continue
         url = str(raw.get("url") or "").strip()
         if not url.lower().startswith(("http://", "https://")):
             continue
+        folder = root
+        components = raw.get('relativeDirs', [])
+        if not isinstance(components, list) or len(components) > 33:
+            raise RuntimeError('Invalid relative directory path')
+        for component in components:
+            if not isinstance(component, str) or component in ('', '.', '..') or core.safe_filename_component(component) != component:
+                raise RuntimeError('Unsafe directory component')
+            folder = folder / component
+            if folder.is_symlink() or not folder.resolve().is_relative_to(root):
+                raise RuntimeError('Directory path escapes destination')
+            folder.mkdir(exist_ok=True)
+        reserved = reserved_by_folder.setdefault(folder, set())
         destination = unique_destination(
-            directory,
+            folder,
             core.safe_filename_component(str(raw.get("filename") or "download")),
             reserved,
         )
@@ -403,8 +416,8 @@ def handle_prepare_batch(message: dict, state: dict) -> dict:
             info["saveMetadata"] = save_metadata
         if save_metadata:
             attach_metadata(state, ticket, {
-                "sourcePageTitle": source_title,
-                "sourcePageUrl": source_url,
+                "sourcePageTitle": raw.get("sourcePageTitle") or source_title,
+                "sourcePageUrl": raw.get("sourcePageUrl") or source_url,
                 "downloadUrl": url,
                 "linkText": raw.get("linkText") or "",
                 "linkTitle": raw.get("linkTitle") or "",

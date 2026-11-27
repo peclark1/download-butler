@@ -1,5 +1,6 @@
+import {parts,isDirectory,isIndex,child} from './directory.js';
 const HOST_NAME = 'com.downloadbutler.host';
-const VERSION = '0.3.3';
+const VERSION = '0.4.0';
 const BATCH_MENU_ID = 'download-butler-selection';
 let promptQueue = Promise.resolve();
 let commitQueue = Promise.resolve();
@@ -542,11 +543,24 @@ async function startBatch(batchId, requestedItems, saveMetadata = true) {
   const originalByUrl = new Map(batch.items.map((x) => [x.url, x]));
   const items = [];
   for (const requested of requestedItems || []) {
-    const original = originalByUrl.get(requested.url);
+    let original = originalByUrl.get(requested.url);
+    let relativeDirs = [];
+    if (requested.rootUrl) {
+      const root = originalByUrl.get(requested.rootUrl);
+      if (!root || !isDirectory(root.url) || isDirectory(requested.url)) throw Error('Invalid directory selection');
+      if (isIndex(batch.sourceTitle) && !child(batch.sourceUrl,root.url)) throw Error('Invalid directory root');
+      const relative = parts(root.url,requested.url);
+      relativeDirs = [safeFilename(requested.rootName || root.filename), ...relative.slice(0,-1).map(safeFilename)];
+      original = {url:requested.url,filename:relative.at(-1),text:requested.text,context:requested.context};
+    }
     if (!original || !selectedUrls.has(requested.url)) continue;
+    if (!requested.rootUrl && isIndex(batch.sourceTitle) && isDirectory(batch.sourceUrl) && !child(batch.sourceUrl,original.url)) continue;
     items.push({
       url: original.url,
       filename: safeFilename(requested.filename || original.filename),
+      relativeDirs,
+      sourcePageUrl: requested.rootUrl ? new URL('.',original.url).href : batch.sourceUrl,
+      sourcePageTitle: requested.rootUrl ? requested.sourcePageTitle : batch.sourceTitle,
       linkText: original.text || '',
       linkTitle: original.title || '',
       pageContext: original.context || '',
@@ -554,6 +568,11 @@ async function startBatch(batchId, requestedItems, saveMetadata = true) {
     });
   }
   if (!items.length) throw new Error('No files are selected for download.');
+  if (items.length > 250) throw Error('Batch exceeds 250 files');
+  if (items.some(x => x.relativeDirs.length)) {
+    const status = await chrome.runtime.sendNativeMessage(HOST_NAME,{action:'status'});
+    if (status?.version !== VERSION) throw Error('Install the updated Download Butler native helper before downloading directories.');
+  }
 
   const settings = await getSettings();
   const response = await chrome.runtime.sendNativeMessage(HOST_NAME, {

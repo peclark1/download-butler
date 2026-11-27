@@ -1,13 +1,18 @@
+import {isDirectory,isIndex,child,parts,scan} from './directory.js';
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 const batchId = params.get('id') || '';
 let batch = null;
+let busy = false, completed = false, expanded = false;
+let initial = [];
 
 function selectedRows() {
   return [...document.querySelectorAll('.row')]
     .filter((row) => row.querySelector('.pick').checked)
     .map((row) => ({
       url: row.dataset.url,
+      rootUrl: row.dataset.rootUrl || '', rootName: row.dataset.rootName || '',
+      sourcePageUrl: row.dataset.sourcePageUrl || '', sourcePageTitle: row.dataset.sourcePageTitle || '', text: row.dataset.text || '', context: row.dataset.context || '',
       filename: row.querySelector('.filename').value.trim() || 'download',
     }));
 }
@@ -16,7 +21,10 @@ function updateCount() {
   const total = document.querySelectorAll('.row').length;
   const selected = selectedRows().length;
   $('count').textContent = `${selected} of ${total} selected`;
-  $('download').disabled = selected === 0;
+  const needScan = $('recursive').checked && selectedRows().some(x => isDirectory(x.url));
+  $('download').disabled = busy || completed || selected === 0 || needScan;
+  $('scan').disabled = busy || completed || !needScan;
+  $('scan').hidden = !$('recursive').checked || ![...document.querySelectorAll('.row')].some(x => isDirectory(x.dataset.url));
   $('selectAll').checked = total > 0 && selected === total;
   $('selectAll').indeterminate = selected > 0 && selected < total;
 }
@@ -42,6 +50,7 @@ function render() {
     const row = document.createElement('div');
     row.className = 'row';
     row.dataset.url = item.url;
+    for (const key of ['rootUrl','rootName','sourcePageUrl','sourcePageTitle','text','context']) row.dataset[key] = item[key] || '';
 
     const pick = document.createElement('input');
     pick.type = 'checkbox';
@@ -64,7 +73,7 @@ function render() {
     if (!sectionTitle.textContent) sectionTitle.classList.add('hidden');
     const linkText = document.createElement('div');
     linkText.className = 'link-text';
-    linkText.textContent = item.text || item.filename;
+    linkText.textContent = (isDirectory(item.url) ? '📁 Directory — ' : item.rootUrl ? '↳ '+[item.rootName,...parts(item.rootUrl,item.url).slice(0,-1)].join('/')+'/ — ' : '') + (item.text || item.filename);
     const context = document.createElement('div');
     context.className = 'context';
     context.textContent = item.context || item.title || '';
@@ -95,11 +104,55 @@ async function load() {
     return;
   }
   batch = response.batch;
-  const prefs = await chrome.storage.local.get({ batchSaveMetadata: true });
+  const prefs = await chrome.storage.local.get({ batchSaveMetadata: true, batchRecursive: true });
+  $('recursive').checked = prefs.batchRecursive;
+  if (isIndex(batch.sourceTitle) && isDirectory(batch.sourceUrl)) {
+    const before = batch.items.length;
+    batch.items = batch.items.filter(x => child(batch.sourceUrl,x.url));
+    $('scanStatus').textContent = (before-batch.items.length)+' navigation/sorting links excluded.';
+  }
+  initial = batch.items.slice();
   $('saveMetadata').checked = prefs.batchSaveMetadata ?? true;
   render();
 }
 
+$('recursive').addEventListener('change', async () => {
+  await chrome.storage.local.set({batchRecursive:$('recursive').checked});
+  if (expanded && !$('recursive').checked) {
+    batch.items = initial.slice(); expanded = false;
+    $('scanStatus').textContent = 'Preview cleared; review selection again.';
+    render();
+  }
+  updateCount();
+});
+$('scan').addEventListener('click', async () => {
+  const rows = selectedRows(), roots = rows.filter(x => isDirectory(x.url));
+  if (!roots.length || busy) return;
+  busy = true; updateCount();
+  const inputs = [...document.querySelectorAll('input')];
+  inputs.forEach(x => x.disabled = true);
+  try {
+    const origins = [...new Set(roots.map(x => new URL(x.url).origin+'/*'))];
+    if (!await chrome.permissions.request({origins})) throw Error('Site permission denied');
+    const next = []; let directories = 0;
+    const byUrl = new Map(batch.items.map(x => [x.url,x]));
+    for (const row of rows) {
+      if (!isDirectory(row.url)) { next.push({...byUrl.get(row.url),filename:row.filename}); continue; }
+      $('scanStatus').textContent = 'Scanning '+row.filename+'…';
+      const result = await scan(row.url);
+      if (!result.files.length) throw Error('No downloadable files in '+row.url);
+      directories += result.directories;
+      next.push(...result.files.map(x => ({...x,rootName:row.filename})));
+      if (next.length > 250 || directories > 250) throw Error('Batch exceeds 250 files or directories');
+    }
+    if (next.length > 250) throw Error('Batch exceeds 250 files');
+    batch.items = next; expanded = true;
+    $('error').classList.add('hidden');
+    $('scanStatus').textContent = next.length+' files ready for review; '+directories+' directories scanned.';
+    render();
+  } catch(e) { showError(String(e.message || e)); $('scanStatus').textContent = 'Scan failed; no downloads started.'; }
+  finally { busy = false; inputs.forEach(x => x.disabled = false); updateCount(); }
+});
 $('saveMetadata').addEventListener('change', async (event) => {
   await chrome.storage.local.set({ batchSaveMetadata: event.target.checked });
 });
@@ -113,7 +166,8 @@ $('cancel').addEventListener('click', () => window.close());
 
 $('download').addEventListener('click', async () => {
   const items = selectedRows();
-  if (!items.length) return;
+  if (!items.length || busy || ($('recursive').checked && items.some(x => isDirectory(x.url)))) return;
+  busy = true;
 
   $('download').disabled = true;
   $('cancel').disabled = true;
@@ -125,6 +179,7 @@ $('download').addEventListener('click', async () => {
     await chrome.storage.local.set({ batchSaveMetadata: saveMetadata });
     const response = await chrome.runtime.sendMessage({ action: 'start_batch', batchId, items, saveMetadata });
     if (response?.cancelled) {
+      busy = false; updateCount();
       $('download').textContent = 'Choose Folder & Download';
       $('download').disabled = false;
       $('cancel').disabled = false;
@@ -136,11 +191,13 @@ $('download').addEventListener('click', async () => {
     const failures = response.failures?.length || 0;
     const destination = response.directoryPath || 'the selected folder';
     showSuccess(`Started ${started} download${started === 1 ? '' : 's'} to ${destination}${failures ? `; ${failures} could not be started.` : '.'}${saveMetadata ? ' Metadata sidecars and Download Butler Index.md will be written as files complete.' : ' Metadata is disabled for this batch.'}`);
+    completed = true; busy = false; $('scan').disabled = true;
     $('download').textContent = 'Downloads started';
     $('cancel').textContent = 'Close';
     $('cancel').disabled = false;
     for (const input of document.querySelectorAll('input')) input.disabled = true;
   } catch (error) {
+    busy = false; updateCount();
     showError(String(error?.message || error));
     $('download').textContent = 'Choose Folder & Download';
     $('download').disabled = false;
