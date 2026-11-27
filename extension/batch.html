@@ -25,11 +25,14 @@
       <label><input id="recursive" type="checkbox" checked> Recursively download directories</label>
       <button id="scan" class="secondary" type="button">Scan selected directories</button>
       <span id="scanStatus" class="hint" role="status"></span>
+      <label class="concurrency-label">Maximum concurrent downloads <input id="concurrency" type="number" min="0" step="1" value="3" required></label>
+      <span class="hint">0 = unlimited</span>
       <span class="hint">Review the files, uncheck anything you don't want, and edit a filename if needed.</span>
     </div>
 
     <div id="list" class="list"></div>
 
+    <section id="queueStatus" class="message hidden" role="status"></section>
     <footer>
       <button id="cancel" class="secondary">Cancel</button>
       <button id="download" class="primary">Choose Folder &amp; Download</button>

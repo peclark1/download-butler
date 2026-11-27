@@ -1,6 +1,7 @@
+import {concurrency,availableSlots} from './queue-policy.js';
 import {parts,isDirectory,isIndex,child} from './directory.js';
 const HOST_NAME = 'com.downloadbutler.host';
-const VERSION = '0.5.0';
+const VERSION = '0.6.0';
 const BATCH_MENU_ID = 'download-butler-selection';
 let promptQueue = Promise.resolve();
 let commitQueue = Promise.resolve();
@@ -291,6 +292,7 @@ async function commitCompletedDownload(downloadId) {
       throw new Error(response?.error || 'Native helper could not move the completed file.');
     }
 
+    await recordQueueOutcome(entry,'saved');
     await removePendingEntry(downloadId);
     if (response.metadataError) {
       await setLastError(`File saved, but metadata could not be written: ${response.metadataError}`);
@@ -313,6 +315,7 @@ async function commitCompletedDownload(downloadId) {
       await chrome.downloads.erase({ id: downloadId }).catch(() => {});
     }
   } catch (error) {
+    await recordQueueOutcome(entry,'failed',String(error?.message || error));
     await setLastError(String(error?.message || error));
   }
 }
@@ -321,6 +324,7 @@ chrome.downloads.onChanged.addListener((delta) => {
   if (delta.state?.current === 'complete') {
     scheduleCommit(delta.id);
   }
+  if (['complete','interrupted'].includes(delta.state?.current)) wakeQueues();
 });
 
 async function recoverCompletedPendingDownloads() {
@@ -535,7 +539,9 @@ async function getBatchRequest(batchId) {
   return result[key] || null;
 }
 
-async function startBatch(batchId, requestedItems, saveMetadata = true) {
+async function startBatch(batchId, requestedItems, saveMetadata = true, requestedLimit = 3) {
+  const limit = concurrency(requestedLimit);
+  if (await readQueue(batchId)) throw Error('Batch already queued.');
   const batch = await getBatchRequest(batchId);
   if (!batch) throw new Error('This batch request has expired. Select the links again.');
 
@@ -591,69 +597,124 @@ async function startBatch(batchId, requestedItems, saveMetadata = true) {
     throw new Error(response?.error || 'Native helper could not prepare the batch.');
   }
 
-  const started = [];
-  const failures = [];
-  for (const prepared of response.items || []) {
-    const reservation = {
-      batchId,
-      url: prepared.url,
-      targetFilename: prepared.targetFilename,
-      destinationPath: prepared.destinationPath,
-      stagingFilename: prepared.stagingFilename,
-      ticket: prepared.ticket,
-      siteKey: batch.siteKey || '',
-      createdAt: new Date().toISOString(),
-    };
-    const reservationKey = batchReservationKey(prepared.stagingFilename);
-    await chrome.storage.local.set({ [reservationKey]: reservation });
-
-    try {
-      const id = await chrome.downloads.download({
-        url: prepared.url,
-        filename: prepared.stagingFilename,
-        saveAs: false,
-        conflictAction: 'overwrite',
-      });
-
-      // onDeterminingFilename normally claims the reservation first. Writing the
-      // per-download state again here makes the batch robust if event ordering
-      // differs on a particular Chrome build.
-      await setPendingEntry(id, {
-        destinationPath: prepared.destinationPath,
-        ticket: prepared.ticket,
-        originalName: prepared.targetFilename,
-        siteKey: batch.siteKey || '',
-        stagingFilename: prepared.stagingFilename,
-        url: prepared.url,
-        batchId,
-        startedAt: new Date().toISOString(),
-      });
-
-      // A very small file can finish before the line above runs. In that case
-      // Chrome's one completion event has already passed, so explicitly check
-      // the current state now and schedule the commit if needed.
-      await scheduleCommitIfAlreadyComplete(id);
-      started.push({ id, filename: prepared.targetFilename, url: prepared.url });
-    } catch (error) {
-      await chrome.storage.local.remove(reservationKey);
-      failures.push({ filename: prepared.targetFilename, url: prepared.url, error: String(error?.message || error) });
-    }
-  }
-
+  const queue = {batchId, limit, siteKey:batch.siteKey || '', directoryPath:response.directoryPath,
+    items:(response.items || []).map(prepared => ({...prepared,state:'queued'}))};
+  await saveQueue(queue);
   await chrome.storage.local.remove(batchRequestKey(batchId));
-  if (failures.length) {
-    await setLastError(`${failures.length} batch download(s) could not be started.`);
-  } else {
-    await clearLastError();
-  }
-
-  return {
-    ok: true,
-    directoryPath: response.directoryPath,
-    started,
-    failures,
-  };
+  wakeQueues();
+  return {ok:true,directoryPath:queue.directoryPath,total:queue.items.length};
 }
+
+// Persist queued files separately from native tickets. Serialize all queue pumps;
+// terminal events and the periodic alarm can safely request another pass.
+const queueKey = id => 'downloadQueue:'+id;
+async function readQueue(id) {
+  const key = queueKey(id);
+  return (await chrome.storage.local.get(key))[key];
+}
+async function saveQueue(queue) {
+  await chrome.storage.local.set({[queueKey(queue.batchId)]:queue});
+}
+let queuePump = Promise.resolve();
+function wakeQueues() {
+  queuePump = queuePump.then(pumpQueues,pumpQueues).catch(error => setLastError(String(error?.message || error)));
+}
+async function queueProgress(id) {
+  const q = await readQueue(id);
+  if (!q) return null;
+  return {queued:q.items.filter(x=>x.state==='queued').length,
+    active:q.items.filter(x=>['starting','active'].includes(x.state)).length,
+    completed:q.items.filter(x=>x.state==='saved').length,
+    failed:q.items.filter(x=>x.state==='failed').length,
+    errors:q.items.filter(x=>x.state==='failed').map(x=>x.targetFilename+': '+x.error)};
+}
+async function reconcile(queue, entry) {
+  let download;
+  if (Number.isInteger(entry.id)) {
+    [download] = await chrome.downloads.search({id:entry.id});
+  } else {
+    // Recover an interrupted worker after download() but before persisting its ID.
+    // Match the unique staging name; never blindly re-submit an ambiguous start.
+    const matches = await chrome.downloads.search({url:entry.url});
+    download = matches.find(x=>basename(x.filename)===entry.stagingFilename);
+    if (download) entry.id = download.id;
+  }
+  if (entry.state==='starting' && !download) {
+    entry.state='failed'; entry.error='Interrupted while starting; verify Chrome downloads before retrying.';
+    await chrome.storage.local.remove(batchReservationKey(entry.stagingFilename));
+    return;
+  }
+  if (!download) {
+    // Successful commit may erase Chrome history. Its durable queue outcome is
+    // recorded before erase, independently of this reconciliation.
+    entry.state='failed'; entry.error='Chrome download record missing.'; return;
+  }
+  if (download.state==='interrupted') {
+    entry.state='failed'; entry.error=download.error || 'Download interrupted';
+    await chrome.storage.local.remove(batchReservationKey(entry.stagingFilename));
+  } else if (download.state==='complete') {
+    // Wait until native commit has recorded success or failure; include this
+    // time in the concurrency slot to avoid racing destination reservations.
+    scheduleCommit(download.id);
+  } else entry.state='active';
+}
+async function launchQueued(queue, entry) {
+  entry.state='starting';
+  await saveQueue(queue);
+  const reservation = {...entry,batchId:queue.batchId,siteKey:queue.siteKey,createdAt:new Date().toISOString()};
+  const key = batchReservationKey(entry.stagingFilename);
+  try {
+    await chrome.storage.local.set({[key]:reservation});
+    const id = await chrome.downloads.download({url:entry.url,filename:entry.stagingFilename,saveAs:false,conflictAction:'overwrite'});
+    entry.id=id; entry.state='active';
+    await setPendingEntry(id,{destinationPath:entry.destinationPath,ticket:entry.ticket,
+      originalName:entry.targetFilename,siteKey:queue.siteKey,stagingFilename:entry.stagingFilename,
+      url:entry.url,batchId:queue.batchId,startedAt:new Date().toISOString()});
+    await saveQueue(queue);
+    await scheduleCommitIfAlreadyComplete(id);
+  } catch(error) {
+    // If Chrome already accepted the transfer, retain its ID and reconcile
+    // instead of launching a duplicate.
+    if (!Number.isInteger(entry.id)) {
+      entry.state='failed'; entry.error=String(error?.message || error);
+      await chrome.storage.local.remove(key);
+    } else throw error;
+  }
+  await saveQueue(queue);
+}
+async function pumpQueues() {
+  const all = await chrome.storage.local.get(null);
+  for (const [key,queue] of Object.entries(all)) {
+    if (!key.startsWith('downloadQueue:')) continue;
+    for (const entry of queue.items) {
+      if (['active','starting'].includes(entry.state)) {
+        const outcome = all['queueOutcome:'+entry.stagingFilename];
+        if (outcome) { entry.state=outcome.state; entry.error=outcome.error || ''; }
+        else await reconcile(queue,entry);
+      }
+    }
+    await saveQueue(queue);
+    const active = queue.items.filter(x=>['starting','active'].includes(x.state)).length;
+    const queued = queue.items.filter(x=>x.state==='queued');
+    for (const entry of queued.slice(0,availableSlots(queue.limit,active,queued.length))) await launchQueued(queue,entry);
+    // Remove outcome markers only once terminal state is safely persisted.
+    const keys = queue.items.filter(x=>['saved','failed'].includes(x.state)).map(x=>'queueOutcome:'+x.stagingFilename);
+    if (keys.length) await chrome.storage.local.remove(keys);
+  }
+}
+async function recordQueueOutcome(entry,state,error='') {
+  if (!entry?.batchId || !entry.stagingFilename) return;
+  await chrome.storage.local.set({['queueOutcome:'+entry.stagingFilename]:{state,error}});
+  wakeQueues();
+}
+chrome.alarms.onAlarm.addListener(alarm=>{if(alarm.name==='downloadButlerQueue') wakeQueues();});
+async function initializeQueue() {
+  if (!await chrome.alarms.get('downloadButlerQueue')) await chrome.alarms.create('downloadButlerQueue',{periodInMinutes:1});
+  wakeQueues();
+}
+chrome.runtime.onStartup.addListener(()=>initializeQueue().catch(console.warn));
+chrome.runtime.onInstalled.addListener(()=>initializeQueue().catch(console.warn));
+initializeQueue().catch(console.warn);
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.action === 'native_status') {
@@ -677,8 +738,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
+  if (message?.action === 'batch_progress' && message.batchId) {
+    queueProgress(message.batchId).then(progress=>sendResponse({ok:Boolean(progress),progress})).catch(error=>sendResponse({ok:false,error:String(error)}));
+    return true;
+  }
   if (message?.action === 'start_batch' && message.batchId) {
-    startBatch(message.batchId, message.items, message.saveMetadata !== false)
+    startBatch(message.batchId, message.items, message.saveMetadata !== false, message.concurrency ?? 3)
       .then((result) => sendResponse(result))
       .catch(async (error) => {
         await setLastError(String(error?.message || error));

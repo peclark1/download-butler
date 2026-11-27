@@ -1,4 +1,4 @@
-# Download Butler 0.5.0 — macOS and Ubuntu
+# Download Butler 0.6.0 — macOS and Ubuntu
 
 Download Butler is a Chrome extension plus a small local native helper that gives Chrome a more useful download workflow:
 
@@ -236,3 +236,9 @@ Run the installer as your desktop user, not with sudo. Open chrome://extensions,
 Zenity supplies Save As and folder selection dialogs. Reveal uses the freedesktop file manager interface when available, otherwise opens the containing folder via xdg-open. The existing recursive batch, metadata and remembered destination functionality is unchanged. To uninstall the helper while keeping history, run ./native-host/uninstall-linux.sh.
 
 Manual acceptance checks: status shows Linux and 0.5.0; single Save As and cancel; flat and recursive batch including nested directories; metadata on/off; remembered folder; reveal; mounted share; macOS regression. These checks require a real desktop and browser.
+
+## Batch concurrency (v0.6.0)
+
+Set **Maximum concurrent downloads** in the existing batch review. The default is 3; enter any positive whole number or 0 for unlimited. The preference is remembered. The limit applies per batch (not across batches or ordinary single downloads). A slot remains occupied until the native helper saves the file. Queue status displays queued, active, saved and failed counts; closing the review tab does not stop transfers. Queue records are persisted and reconciled after browser/worker restart; an ambiguous interrupted launch is marked failed rather than duplicated. Interrupted transfers are not automatically retried. Native tickets retain their existing 24-hour expiry, so very long batches or shutdowns can require a new batch. The existing 250-file selection limit remains. Update both native helper and extension before using recursive batches.
+
+Manual tests: use a slow directory with at least 5 files, verify 3 active by default and a new transfer starts as one finishes; repeat with 1, 7 and 0; close review tab; restart browser; interrupt a transfer; verify final paths and metadata. Automated policy tests: node --test tests/queue-policy.test.mjs (Node 22+).

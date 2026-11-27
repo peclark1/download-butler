@@ -20,7 +20,7 @@ from urllib.parse import quote
 
 import download_butler_host as core
 
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 METADATA_VERSION = 2
 METADATA_SUFFIX = ".download-info.md"
 INDEX_FILENAME = "Download Butler Index.md"
