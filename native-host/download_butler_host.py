@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Download Butler native-messaging host.
 
-v0.2 targets macOS for native UI. The message protocol and file-move layer are
-kept platform-neutral so Windows/Linux backends can implement the same actions.
+Native UI supports macOS and Linux. The messaging and file-move layer is shared.
 """
 
 from __future__ import annotations
@@ -186,16 +185,54 @@ function run(argv) {
     return result
 
 
+def run_zenity(*args: str) -> str | None:
+    executable = shutil.which("zenity")
+    if not executable:
+        raise RuntimeError("Zenity is required: sudo apt install zenity")
+    if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        raise RuntimeError("Download Butler requires a graphical desktop session")
+    proc = subprocess.run(
+        [executable, "--file-selection", *args],
+        capture_output=True, text=True, check=False,
+    )
+    if proc.returncode == 1:
+        if "cannot open display" in proc.stderr.lower():
+            raise RuntimeError(proc.stderr.strip())
+        return None
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or f"Zenity exited with {proc.returncode}")
+    result = proc.stdout.rstrip("\n")
+    if not result or not Path(result).is_absolute():
+        raise RuntimeError("Zenity returned an invalid destination")
+    return result
+
+
+def choose_destination_linux(filename: str, initial_dir: Path) -> str | None:
+    return run_zenity("--save", "--confirm-overwrite",
+                      "--title=Download Butler — Save download as",
+                      f"--filename={initial_dir / filename}")
+
+
+def choose_folder_linux(initial_dir: Path) -> str | None:
+    return run_zenity("--directory",
+                      "--title=Download Butler — Choose download folder",
+                      f"--filename={initial_dir}/")
+
+
 def choose_destination(filename: str, initial_dir: Path) -> str | None:
     if sys.platform == "darwin":
         return choose_destination_macos(filename, initial_dir)
-    raise RuntimeError("The native Save As dialog is currently implemented on macOS only.")
+    if sys.platform.startswith("linux"):
+        return choose_destination_linux(filename, initial_dir)
+    raise RuntimeError("The native Save As dialog is supported on macOS and Linux only.")
 
 
 def choose_folder(initial_dir: Path) -> str | None:
     if sys.platform == "darwin":
         return choose_folder_macos(initial_dir)
-    raise RuntimeError("The native folder chooser is currently implemented on macOS only.")
+    if sys.platform.startswith("linux"):
+        return choose_folder_linux(initial_dir)
+    raise RuntimeError("The native folder chooser is supported on macOS and Linux only.")
 
 
 def safe_filename_component(raw: str) -> str:
@@ -426,7 +463,34 @@ def handle_reveal(message: dict) -> dict:
         target = path if path.exists() else path.parent
         subprocess.Popen(["/usr/bin/open", "-R", str(target)])
         return {"ok": True}
-    raise RuntimeError("Reveal is currently implemented on macOS only")
+    if sys.platform.startswith("linux"):
+        target = path.absolute()
+        if target.exists():
+            gdbus = shutil.which("gdbus")
+            if gdbus:
+                method = "ShowFolders" if target.is_dir() else "ShowItems"
+                try:
+                    proc = subprocess.run(
+                        [gdbus, "call", "--session", "--dest", "org.freedesktop.FileManager1",
+                         "--object-path", "/org/freedesktop/FileManager1",
+                         "--method", f"org.freedesktop.FileManager1.{method}",
+                         json.dumps([target.as_uri()]), '""'],
+                        capture_output=True, text=True, timeout=5, check=False,
+                    )
+                    if proc.returncode == 0:
+                        return {"ok": True}
+                except subprocess.TimeoutExpired:
+                    pass
+        folder = target if target.is_dir() else target.parent
+        if not folder.is_dir():
+            raise RuntimeError("Download folder no longer exists")
+        opener = shutil.which("xdg-open")
+        if not opener:
+            raise RuntimeError("xdg-open is required: sudo apt install xdg-utils")
+        subprocess.Popen([opener, str(folder)], stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return {"ok": True}
+    raise RuntimeError("Reveal is supported on macOS and Linux only")
 
 
 def handle_status(state: dict) -> dict:
